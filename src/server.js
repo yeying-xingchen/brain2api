@@ -37,6 +37,31 @@ function writeJson(res, statusCode, payload) {
   res.end(JSON.stringify(payload));
 }
 
+function writeSse(res, payload) {
+  res.write(`data: ${JSON.stringify(payload)}\n\n`);
+}
+
+function endSse(res) {
+  res.write('data: [DONE]\n\n');
+  res.end();
+}
+
+function createChunk(id, model, content, finishReason = null) {
+  return {
+    id,
+    object: 'chat.completion.chunk',
+    created: nowSeconds(),
+    model,
+    choices: [
+      {
+        index: 0,
+        delta: content ? { role: 'assistant', content } : { role: 'assistant' },
+        finish_reason: finishReason
+      }
+    ]
+  };
+}
+
 function extractQuestion(messages) {
   if (!Array.isArray(messages) || messages.length === 0) {
     return '';
@@ -127,6 +152,7 @@ async function handleCompletion(req, res) {
   const model = typeof body.model === 'string' && body.model ? body.model : 'human-brain-001';
   const question = extractQuestion(body.messages);
   const timeoutMs = Number.isFinite(body.timeout_ms) && body.timeout_ms > 0 ? body.timeout_ms : 30000;
+  const stream = body.stream === true;
   if (!question) {
     writeJson(res, 400, {
       error: {
@@ -148,6 +174,17 @@ async function handleCompletion(req, res) {
         code: 'human_timeout'
       }
     });
+    return;
+  }
+  if (stream) {
+    res.writeHead(200, {
+      'content-type': 'text/event-stream; charset=utf-8',
+      connection: 'keep-alive',
+      'cache-control': 'no-cache, no-transform'
+    });
+    writeSse(res, createChunk(task.id, model, answer.answer.content));
+    writeSse(res, createChunk(task.id, model, '', 'stop'));
+    endSse(res);
     return;
   }
   writeJson(res, 200, toOpenAIResponse(task.id, model, answer.answer.content, {

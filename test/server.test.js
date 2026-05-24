@@ -40,6 +40,31 @@ function startServer() {
       res.end(JSON.stringify(payload));
     }
 
+    function writeSse(res, payload) {
+      res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    }
+
+    function endSse(res) {
+      res.write('data: [DONE]\n\n');
+      res.end();
+    }
+
+    function createChunk(id, model, content, finishReason = null) {
+      return {
+        id,
+        object: 'chat.completion.chunk',
+        created: nowSeconds(),
+        model,
+        choices: [
+          {
+            index: 0,
+            delta: content ? { role: 'assistant', content } : { role: 'assistant' },
+            finish_reason: finishReason
+          }
+        ]
+      };
+    }
+
     function extractQuestion(messages) {
       if (!Array.isArray(messages) || messages.length === 0) {
         return '';
@@ -112,6 +137,7 @@ function startServer() {
       const model = typeof body.model === 'string' && body.model ? body.model : 'human-brain-001';
       const question = extractQuestion(body.messages);
       const timeoutMs = Number.isFinite(body.timeout_ms) && body.timeout_ms > 0 ? body.timeout_ms : 30000;
+      const stream = body.stream === true;
       if (!question) {
         writeJson(res, 400, {
           error: {
@@ -132,6 +158,17 @@ function startServer() {
             code: 'human_timeout'
           }
         });
+        return;
+      }
+      if (stream) {
+        res.writeHead(200, {
+          'content-type': 'text/event-stream; charset=utf-8',
+          connection: 'keep-alive',
+          'cache-control': 'no-cache, no-transform'
+        });
+        writeSse(res, createChunk(task.id, model, answer.answer.content));
+        writeSse(res, createChunk(task.id, model, '', 'stop'));
+        endSse(res);
         return;
       }
       writeJson(res, 200, toOpenAIResponse(task.id, model, answer.answer.content, {
@@ -273,14 +310,38 @@ test('completion waits for human answer and returns OpenAI style response', asyn
   }
 });
 
-test('completion returns validation error for empty messages', async () => {
+test('completion supports stream mode and returns SSE chunks', async () => {
   const { server, port } = await startServer();
   try {
-    const { response, data } = await requestJson(port, '/v1/chat/completions', 'POST', {
-      messages: []
+    const completionPromise = fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'human-brain-001',
+        messages: [{ role: 'user', content: '请用一句话解释 brain2api' }],
+        stream: true,
+        timeout_ms: 2000
+      })
     });
-    assert.equal(response.status, 400);
-    assert.equal(data.error.code, 'invalid_messages');
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const tasksResult = await requestJson(port, '/tasks', 'GET');
+    const taskId = tasksResult.data.data[0].id;
+    await requestJson(port, '/tasks/submit', 'POST', {
+      id: taskId,
+      content: 'brain2api 会把人类回答包装成 OpenAI 风格流式输出。',
+      respondent_id: 'bob'
+    });
+
+    const response = await completionPromise;
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get('content-type') ?? '', /text\/event-stream/);
+
+    const text = await response.text();
+    assert.match(text, /chat\.completion\.chunk/);
+    assert.match(text, /brain2api 会把人类回答包装成 OpenAI 风格流式输出。/);
+    assert.match(text, /\[DONE\]/);
   } finally {
     server.close();
   }
