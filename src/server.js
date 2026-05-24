@@ -1,5 +1,12 @@
+import { createReadStream, existsSync, statSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 const pendingRequests = new Map();
 const waitingResolvers = new Map();
+const currentFile = fileURLToPath(import.meta.url);
+const currentDir = path.dirname(currentFile);
+const frontendDistDir = path.resolve(currentDir, '../frontend/dist');
 
 function nowSeconds() {
   return Math.floor(Date.now() / 1000);
@@ -339,12 +346,44 @@ function handleAdmin(req, res) {
   res.end(adminHtml);
 }
 
+function getContentType(filePath) {
+  const ext = path.extname(filePath);
+  if (ext === '.html') return 'text/html; charset=utf-8';
+  if (ext === '.js') return 'text/javascript; charset=utf-8';
+  if (ext === '.css') return 'text/css; charset=utf-8';
+  if (ext === '.svg') return 'image/svg+xml';
+  if (ext === '.json') return 'application/json; charset=utf-8';
+  if (ext === '.ico') return 'image/x-icon';
+  return 'application/octet-stream';
+}
+
+function handleStaticFrontend(url, res) {
+  if (!existsSync(frontendDistDir)) {
+    return false;
+  }
+  const pathname = decodeURIComponent(url.pathname);
+  const normalizedPath = pathname === '/' ? '/index.html' : pathname;
+  const requestedPath = path.resolve(frontendDistDir, `.${normalizedPath}`);
+  const safePath = requestedPath.startsWith(frontendDistDir) ? requestedPath : path.join(frontendDistDir, 'index.html');
+  const filePath = existsSync(safePath) && statSync(safePath).isFile() ? safePath : path.join(frontendDistDir, 'index.html');
+  if (!existsSync(filePath)) {
+    return false;
+  }
+  res.writeHead(200, {
+    'content-type': getContentType(filePath)
+  });
+  createReadStream(filePath).pipe(res);
+  return true;
+}
+
 async function main() {
   const { createServer } = await import('node:http');
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
     if (req.method === 'GET' && url.pathname === '/') {
-      handleAdmin(req, res);
+      if (!handleStaticFrontend(url, res)) {
+        handleAdmin(req, res);
+      }
       return;
     }
     if (req.method === 'GET' && url.pathname === '/health') {
@@ -381,6 +420,9 @@ async function main() {
     }
     if (req.method === 'GET' && url.pathname === '/tasks') {
       handleListTasks(req, res);
+      return;
+    }
+    if (req.method === 'GET' && handleStaticFrontend(url, res)) {
       return;
     }
     writeJson(res, 404, {
