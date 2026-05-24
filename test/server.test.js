@@ -218,6 +218,11 @@ function startServer() {
 
     const server = createServer(async (req, res) => {
       const url = new URL(req.url ?? '/', 'http://localhost');
+      if (req.method === 'GET' && url.pathname === '/') {
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+        res.end('<!doctype html><title>brain2api</title><main>brain2api</main>');
+        return;
+      }
       if (req.method === 'GET' && url.pathname === '/health') {
         writeJson(res, 200, { ok: true, service: 'brain2api' });
         return;
@@ -264,6 +269,12 @@ async function requestJson(port, path, method, body) {
   return { response, data };
 }
 
+async function requestText(port, path) {
+  const response = await fetch(`http://127.0.0.1:${port}${path}`);
+  const text = await response.text();
+  return { response, text };
+}
+
 test('health endpoint works', async () => {
   const { server, port } = await startServer();
   try {
@@ -271,6 +282,18 @@ test('health endpoint works', async () => {
     assert.equal(response.status, 200);
     assert.equal(data.ok, true);
     assert.equal(data.service, 'brain2api');
+  } finally {
+    server.close();
+  }
+});
+
+test('admin page is served from root path', async () => {
+  const { server, port } = await startServer();
+  try {
+    const { response, text } = await requestText(port, '/');
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get('content-type') ?? '', /text\/html/);
+    assert.match(text, /brain2api/);
   } finally {
     server.close();
   }

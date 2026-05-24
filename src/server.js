@@ -244,10 +244,109 @@ function handleHealth(req, res) {
   });
 }
 
+const adminHtml = `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>brain2api</title>
+  <style>
+    body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #0f172a; color: #e2e8f0; }
+    main { width: min(960px, calc(100vw - 32px)); margin: 40px auto; }
+    h1 { margin: 0 0 8px; font-size: 32px; }
+    p { color: #94a3b8; }
+    button, textarea, input { font: inherit; }
+    button { border: 0; border-radius: 10px; padding: 10px 14px; background: #38bdf8; color: #082f49; cursor: pointer; font-weight: 700; }
+    button:hover { background: #7dd3fc; }
+    .toolbar { display: flex; gap: 12px; align-items: center; margin: 24px 0; }
+    .task { border: 1px solid #334155; border-radius: 16px; padding: 18px; margin-bottom: 16px; background: #111827; }
+    .meta { color: #64748b; font-size: 13px; margin-bottom: 8px; }
+    .question { white-space: pre-wrap; margin-bottom: 14px; line-height: 1.6; }
+    textarea { box-sizing: border-box; width: 100%; min-height: 120px; border: 1px solid #334155; border-radius: 12px; padding: 12px; background: #020617; color: #e2e8f0; resize: vertical; }
+    input { border: 1px solid #334155; border-radius: 10px; padding: 10px; background: #020617; color: #e2e8f0; }
+    .answer-row { display: flex; gap: 10px; margin-top: 10px; align-items: center; }
+    .answer-row input { width: 180px; }
+    .empty { border: 1px dashed #334155; border-radius: 16px; padding: 32px; text-align: center; color: #94a3b8; }
+    .status { color: #94a3b8; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>brain2api</h1>
+    <p>像调用 OpenAI 一样调用真人回答。这里是回答者后台，有问题出现后直接提交答案。</p>
+    <div class="toolbar">
+      <button id="refresh">刷新任务</button>
+      <span class="status" id="status">等待加载</span>
+    </div>
+    <section id="tasks"></section>
+  </main>
+  <script>
+    const tasksEl = document.querySelector('#tasks');
+    const statusEl = document.querySelector('#status');
+    const refreshEl = document.querySelector('#refresh');
+
+    async function loadTasks() {
+      statusEl.textContent = '加载中';
+      const response = await fetch('/tasks');
+      const payload = await response.json();
+      renderTasks(payload.data ?? []);
+      statusEl.textContent = '已更新 ' + new Date().toLocaleTimeString();
+    }
+
+    function renderTasks(tasks) {
+      if (tasks.length === 0) {
+        tasksEl.innerHTML = '<div class="empty">暂无待回答问题</div>';
+        return;
+      }
+      tasksEl.innerHTML = tasks.map((task) => '<article class="task" data-id="' + task.id + '"><div class="meta">' + task.id + ' · ' + task.model + '</div><div class="question"></div><textarea placeholder="输入你的回答"></textarea><div class="answer-row"><input placeholder="回答者 ID" value="human"><button>提交回答</button></div></article>').join('');
+      tasks.forEach((task) => {
+        const node = tasksEl.querySelector('[data-id="' + task.id + '"]');
+        node.querySelector('.question').textContent = task.question;
+        node.querySelector('button').addEventListener('click', async () => {
+          const content = node.querySelector('textarea').value.trim();
+          const respondentId = node.querySelector('input').value.trim() || 'human';
+          if (!content) {
+            statusEl.textContent = '回答不能为空';
+            return;
+          }
+          const response = await fetch('/tasks/submit', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ id: task.id, content, respondent_id: respondentId })
+          });
+          if (response.ok) {
+            statusEl.textContent = '已提交 ' + task.id;
+            await loadTasks();
+          } else {
+            const payload = await response.json();
+            statusEl.textContent = payload.error?.message ?? '提交失败';
+          }
+        });
+      });
+    }
+
+    refreshEl.addEventListener('click', loadTasks);
+    loadTasks();
+    setInterval(loadTasks, 3000);
+  </script>
+</body>
+</html>`;
+
+function handleAdmin(req, res) {
+  res.writeHead(200, {
+    'content-type': 'text/html; charset=utf-8'
+  });
+  res.end(adminHtml);
+}
+
 async function main() {
   const { createServer } = await import('node:http');
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
+    if (req.method === 'GET' && url.pathname === '/') {
+      handleAdmin(req, res);
+      return;
+    }
     if (req.method === 'GET' && url.pathname === '/health') {
       handleHealth(req, res);
       return;
